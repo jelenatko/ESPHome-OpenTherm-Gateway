@@ -1,3 +1,7 @@
+# TEMPORARY FILE FOR LOCAL TESTING - DO NOT COMMIT
+# This file uses local components for development and testing
+# Copy from example_opentherm.yaml and modify the external_components section
+
 # Example configuration for OpenTherm Gateway
 # Platform: ESP8266 (NodeMCU or similar)
 # Author: Your Name
@@ -17,9 +21,9 @@ esp8266:
 
 # Enable logging
 logger:
-  level: DEBUG
+  level: VERBOSE
   logs:
-    opentherm.component: DEBUG
+    opentherm.component: VERBOSE
 
 # Enable Home Assistant API
 api:
@@ -33,32 +37,19 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  
-  # Enable fallback hotspot in case wifi connection fails
+
   ap:
-    ssid: "${device_name}_AP"
+    ssid: "${friendly_name} Fallback AP"
     password: "YOUR_AP_PASSWORD"
 
 captive_portal:
 
-# External components setup
+# LOCAL TESTING - uses local components directory
 external_components:
-  - source: github://sakrut/ESPHome-OpenTherm-Gateway
+  - source:
+      type: local
+      path: components
     components: [ opentherm ]
-    refresh: 0d
-
-# For local development/testing, use:
-# external_components:
-#   - source:
-#       type: local
-#       path: components
-#     components: [ opentherm ]
-
-# For testing specific branch (e.g., localtests):
-# external_components:
-#   - source: github://sakrut/ESPHome-OpenTherm-Gateway@localtests
-#     components: [ opentherm ]
-#     refresh: 0d
 
 # Dashboard web UI
 web_server:
@@ -78,61 +69,72 @@ opentherm:
   out_pin: 5     # D1 on NodeMCU
   slave_in_pin: 12  # D6 on NodeMCU
   slave_out_pin: 13 # D7 on NodeMCU
-  
+
   # Binary sensors
   flame:
     name: "${friendly_name} Flame"
     id: boiler_flame
-    
+
   ch_active:
     name: "${friendly_name} Central Heating"
     id: ch_active
-    
+
   dhw_active:
     name: "${friendly_name} Hot Water"
     id: dhw_active
-    
+
   fault:
     name: "${friendly_name} Fault"
     id: boiler_fault
-    
+
   diagnostic:
     name: "${friendly_name} Diagnostic"
     id: boiler_diagnostic
-  
+
   # Temperature and other sensors
   external_temperature:
     name: "${friendly_name} External Temperature"
-    id: external_temp
-    
+
   return_temperature:
     name: "${friendly_name} Return Temperature"
-    id: return_temp
-    
+
   boiler_temperature:
     name: "${friendly_name} Boiler Temperature"
-    id: boiler_temp
-    
+
   pressure:
-    name: "${friendly_name} System Pressure"
-    id: system_pressure
-    
+    name: "${friendly_name} Pressure"
+
   modulation:
-    name: "${friendly_name} Modulation Level"
-    id: modulation_level
-    
+    name: "${friendly_name} Modulation"
+
   heating_target_temperature:
-    name: "${friendly_name} Heating Target"
-    id: heating_target
-  
-  # Climate controls
+    name: "${friendly_name} Heating Target Temperature"
+
+  # Phase 1 - Boiler Limits & Diagnostics
+  max_ch_setpoint:
+    name: "${friendly_name} Max CH Setpoint"
+
+  max_modulation:
+    name: "${friendly_name} Max Modulation"
+
+  oem_fault_code:
+    name: "${friendly_name} OEM Fault Code"
+
+  oem_diagnostic_code:
+    name: "${friendly_name} OEM Diagnostic Code"
+
+  master_ot_version:
+    name: "${friendly_name} Master OT Version"
+
+  slave_ot_version:
+    name: "${friendly_name} Slave OT Version"
+
+  # Climate entities
   hot_water_climate:
     name: "${friendly_name} Hot Water"
-    id: hot_water
-    
+
   heating_water_climate:
-    name: "${friendly_name} Central Heating"
-    id: central_heating
+    name: "${friendly_name} Heating Water"
 
 # Add buttons
 button:
@@ -146,4 +148,3 @@ button:
     name: "${friendly_name} Reset Boiler"
     id: reset_boiler_button
     icon: "mdi:restart-alert"
-
