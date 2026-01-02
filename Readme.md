@@ -227,6 +227,7 @@ Contributions welcome! Please:
 
 - [Ihor Melnyk's OpenTherm Library](https://github.com/ihormelnyk/opentherm_library)
 - OpenTherm community
+- [rsciriano ESPHome-OpenTherm](https://github.com/rsciriano/ESPHome-OpenTherm)
 
 ---
 
