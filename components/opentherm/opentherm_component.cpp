@@ -227,12 +227,15 @@ namespace esphome
 
       if (heating_water_climate_ != nullptr)
       {
-        heating_water_climate_->current_temperature = boiler_temperature;
+        // Show room temperature (from master, e.g. QAA73) instead of boiler water temp.
+        // Falls back to boiler_temperature if QAA73 hasn't sent Tr yet.
+        heating_water_climate_->current_temperature = !std::isnan(room_temperature) ? room_temperature : boiler_temperature;
         heating_water_climate_->action = is_central_heating_active ? climate::CLIMATE_ACTION_HEATING : climate::CLIMATE_ACTION_OFF;
-        // Initialize target temperature from boiler on first update only
-        // After that, keep the user's set value and don't overwrite it
-        // The heating_target_temperature_sensor will show what the boiler is actually using
-        heating_water_climate_->initialize_target_temperature(heating_target_temp);
+        // Initialize target from room_setpoint (ID 16, from QAA73) on first update only.
+        // Falls back to heating_target_temp (CH setpoint) if QAA73 hasn't sent TrSet yet.
+        // After first init, user can override with +/- in HA — that value is kept.
+        float init_target = !std::isnan(room_setpoint) ? room_setpoint : heating_target_temp;
+        heating_water_climate_->initialize_target_temperature(init_target);
         heating_water_climate_->publish_state();
       }
     }
