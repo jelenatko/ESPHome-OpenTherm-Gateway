@@ -145,6 +145,8 @@ namespace esphome
       float modulation = getModulation();
       float heating_target_temp = getHeatingTargetTemperature();
       float hot_water_temp = getHotWaterTemperature();
+      float room_temperature = getRoomTemperature();
+      float room_setpoint = getRoomSetpoint();
 
       if (external_temperature_sensor_ != nullptr && !std::isnan(ext_temperature))
         external_temperature_sensor_->publish_state(ext_temperature);
@@ -163,6 +165,14 @@ namespace esphome
 
       if (heating_target_temperature_sensor_ != nullptr && !std::isnan(heating_target_temp) && heating_target_temp > 0)
         heating_target_temperature_sensor_->publish_state(heating_target_temp);
+
+      // Room temperature (ID 24) — sent by master (e.g. QAA73) as WRITE-DATA, intercepted from bus
+      if (room_temperature_sensor_ != nullptr && !std::isnan(room_temperature))
+        room_temperature_sensor_->publish_state(room_temperature);
+
+      // Room setpoint (ID 16) — sent by master (e.g. QAA73) as WRITE-DATA, intercepted from bus
+      if (room_setpoint_sensor_ != nullptr && !std::isnan(room_setpoint))
+        room_setpoint_sensor_->publish_state(room_setpoint);
 
       // Read OEM diagnostic codes (Data-ID 5 and 115) - only if fault or diagnostic active
       if (is_fault || is_diagnostic)
@@ -268,8 +278,20 @@ namespace esphome
 
     float OpenthermComponent::getRoomTemperature()
     {
-      unsigned long response = ot_->sendRequest(ot_->buildRequest(OpenThermRequestType::READ, OpenThermMessageID::Tr, 0));
-      return ot_->isValidResponse(response) ? ot_->getFloat(response) : NAN;
+      // Tr (ID 24) is sent by the master (e.g. QAA73) to the boiler as WRITE-DATA.
+      // We intercept it in processRequest() and cache it here.
+      // Do NOT use ot_->sendRequest(READ, Tr) — the boiler (slave) does not store
+      // this value and will not respond to a READ request for it.
+      return cached_room_temp_.value;
+    }
+
+    float OpenthermComponent::getRoomSetpoint()
+    {
+      // TrSet (ID 16) is sent by the master (e.g. QAA73) to the boiler as WRITE-DATA.
+      // We intercept it in processRequest() and cache it here.
+      // Do NOT use ot_->sendRequest(READ, TrSet) — the boiler (slave) does not store
+      // this value and will not respond to a READ request for it.
+      return cached_room_setpoint_.value;
     }
 
     bool OpenthermComponent::setTemperatureWithVerification(
@@ -401,7 +423,9 @@ namespace esphome
           last_intercepted_id_ = id;
           has_new_intercepted_response_ = true;
         }
-        // Also cache WRITE-DATA requests (thermostat setting values)
+        // Also cache WRITE-DATA requests (thermostat setting values).
+        // This is how we capture Tr (ID 24) and TrSet (ID 16) from the master (e.g. QAA73).
+        // The master sends these to the boiler; we sniff them off the bus here.
         else if (msg_type == OpenThermMessageType::WRITE_DATA)
         {
           // For WRITE requests, cache the REQUEST data (what thermostat wants to set)
@@ -466,6 +490,24 @@ namespace esphome
           cached_dhw_target_.value = ot_->getFloat(response);
           cached_dhw_target_.last_update = now;
           ESP_LOGV(TAG, "Cached DHW target: %.1f°C", cached_dhw_target_.value);
+          break;
+
+        // Room temperature (ID 24) — WRITE-DATA from master (e.g. QAA73).
+        // The master periodically sends the actual room temperature it measures
+        // (or receives from a connected room sensor) to the boiler.
+        case OpenThermMessageID::Tr:
+          cached_room_temp_.value = ot_->getFloat(response);
+          cached_room_temp_.last_update = now;
+          ESP_LOGV(TAG, "Cached room temp: %.1f°C", cached_room_temp_.value);
+          break;
+
+        // Room setpoint (ID 16) — WRITE-DATA from master (e.g. QAA73).
+        // The master sends the desired room temperature (as set on the thermostat)
+        // to the boiler. This is the target the QAA73 is currently trying to reach.
+        case OpenThermMessageID::TrSet:
+          cached_room_setpoint_.value = ot_->getFloat(response);
+          cached_room_setpoint_.last_update = now;
+          ESP_LOGV(TAG, "Cached room setpoint: %.1f°C", cached_room_setpoint_.value);
           break;
 
         case OpenThermMessageID::Status:
