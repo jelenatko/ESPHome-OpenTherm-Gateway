@@ -45,6 +45,8 @@ namespace esphome
       void set_pressure_sensor(sensor::Sensor *sensor) { pressure_sensor_ = sensor; }
       void set_modulation_sensor(sensor::Sensor *sensor) { modulation_sensor_ = sensor; }
       void set_heating_target_temperature_sensor(sensor::Sensor *sensor) { heating_target_temperature_sensor_ = sensor; }
+      void set_room_temperature_sensor(sensor::Sensor *sensor) { room_temperature_sensor_ = sensor; }
+      void set_room_setpoint_sensor(sensor::Sensor *sensor) { room_setpoint_sensor_ = sensor; }
 
       // Phase 1 sensor setters
       void set_max_ch_setpoint_sensor(sensor::Sensor *sensor) { max_ch_setpoint_sensor_ = sensor; }
@@ -72,6 +74,7 @@ namespace esphome
       float getHotWaterTargetTemperature();
       float getHotWaterTemperature();
       float getRoomTemperature();
+      float getRoomSetpoint();
       bool setHotWaterTemperature(float temperature);
       bool setHeatingTargetTemperature(float temperature);
       float getModulation();
@@ -103,6 +106,8 @@ namespace esphome
       sensor::Sensor *pressure_sensor_{nullptr};
       sensor::Sensor *modulation_sensor_{nullptr};
       sensor::Sensor *heating_target_temperature_sensor_{nullptr};
+      sensor::Sensor *room_temperature_sensor_{nullptr};
+      sensor::Sensor *room_setpoint_sensor_{nullptr};
 
       // Phase 1 sensors
       sensor::Sensor *max_ch_setpoint_sensor_{nullptr};
@@ -146,6 +151,8 @@ namespace esphome
       CachedValue cached_heating_target_;
       CachedValue cached_dhw_temp_;
       CachedValue cached_dhw_target_;
+      CachedValue cached_room_temp_;
+      CachedValue cached_room_setpoint_;
 
       const unsigned long CACHE_TIMEOUT_{60000};  // 1 minute in ms
       const unsigned long MIN_FETCH_INTERVAL_{5000};  // Minimum 5s between fetch requests for same sensor
