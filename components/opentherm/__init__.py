@@ -33,6 +33,8 @@ CONF_BOILER_TEMPERATURE = "boiler_temperature"
 CONF_PRESSURE = "pressure"
 CONF_MODULATION = "modulation"
 CONF_HEATING_TARGET_TEMPERATURE = "heating_target_temperature"
+CONF_ROOM_TEMPERATURE = "room_temperature"
+CONF_ROOM_SETPOINT = "room_setpoint"
 CONF_HOT_WATER_CLIMATE = "hot_water_climate"
 CONF_HEATING_WATER_CLIMATE = "heating_water_climate"
 CONF_IN_PIN = "in_pin"
@@ -100,6 +102,20 @@ CONFIG_SCHEMA = cv.Schema({
         state_class=STATE_CLASS_MEASUREMENT,
     ),
     cv.Optional(CONF_HEATING_TARGET_TEMPERATURE): sensor.sensor_schema(
+        unit_of_measurement=UNIT_CELSIUS,
+        accuracy_decimals=1,
+        device_class=DEVICE_CLASS_TEMPERATURE,
+        state_class=STATE_CLASS_MEASUREMENT,
+    ),
+    # Room temperature (ID 24) — actual room temp sent by master (e.g. QAA73)
+    cv.Optional(CONF_ROOM_TEMPERATURE): sensor.sensor_schema(
+        unit_of_measurement=UNIT_CELSIUS,
+        accuracy_decimals=1,
+        device_class=DEVICE_CLASS_TEMPERATURE,
+        state_class=STATE_CLASS_MEASUREMENT,
+    ),
+    # Room setpoint (ID 16) — desired room temp set on master (e.g. QAA73)
+    cv.Optional(CONF_ROOM_SETPOINT): sensor.sensor_schema(
         unit_of_measurement=UNIT_CELSIUS,
         accuracy_decimals=1,
         device_class=DEVICE_CLASS_TEMPERATURE,
@@ -192,6 +208,14 @@ async def to_code(config):
     if CONF_HEATING_TARGET_TEMPERATURE in config:
         sens = await sensor.new_sensor(config[CONF_HEATING_TARGET_TEMPERATURE])
         cg.add(var.set_heating_target_temperature_sensor(sens))
+
+    if CONF_ROOM_TEMPERATURE in config:
+        sens = await sensor.new_sensor(config[CONF_ROOM_TEMPERATURE])
+        cg.add(var.set_room_temperature_sensor(sens))
+
+    if CONF_ROOM_SETPOINT in config:
+        sens = await sensor.new_sensor(config[CONF_ROOM_SETPOINT])
+        cg.add(var.set_room_setpoint_sensor(sens))
 
     # Phase 1 sensors
     if CONF_MAX_CH_SETPOINT in config:
