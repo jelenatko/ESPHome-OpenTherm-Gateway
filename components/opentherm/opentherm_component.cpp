@@ -620,31 +620,35 @@ namespace esphome
       unsigned long response = ot_->sendRequest(request);
       ESP_LOGD(TAG, "BLOR response: 0x%08lX", response);
 
-      if (ot_->isValidResponse(response))
+      // Do NOT use ot_->isValidResponse() here.
+      // Many boilers (e.g. Geminox) respond to BLOR with a frame that has an incorrect
+      // parity bit or non-standard sync/type bits. The ihormelnyk library rejects these
+      // as invalid, but the boiler DID receive and process the command.
+      // Instead we check: did we get any response at all, and does the Data-ID match?
+      if (response != 0)
       {
-        // Extract full response data
+        unsigned int response_data_id = ot_->getDataID(response);
         uint16_t response_data = response & 0xFFFF;
         uint8_t high_byte = (response_data >> 8) & 0xFF;
         uint8_t low_byte = response_data & 0xFF;
 
-        ESP_LOGD(TAG, "BLOR response data: HB=0x%02X (%d), LB=0x%02X (%d)",
-                 high_byte, high_byte, low_byte, low_byte);
+        ESP_LOGD(TAG, "BLOR response data: dataID=%d, HB=0x%02X (%d), LB=0x%02X (%d)",
+                 response_data_id, high_byte, high_byte, low_byte, low_byte);
 
-        // Check if command was accepted (response code in LB should be >= 128 for success)
-        // Or check HB for echo of command code
-        if (low_byte >= 128 || high_byte == 1)
+        if (response_data_id == static_cast<unsigned int>(OpenThermMessageID::Command))
         {
+          // Boiler echoed back Data-ID 4 — command was received.
           ESP_LOGI(TAG, "Boiler reset command completed successfully (HB=%d, LB=%d)", high_byte, low_byte);
           return true;
         }
         else
         {
-          ESP_LOGW(TAG, "Boiler reset command failed or not supported (HB=%d, LB=%d)", high_byte, low_byte);
+          ESP_LOGW(TAG, "BLOR: got response but Data-ID mismatch (expected 4, got %d)", response_data_id);
           return false;
         }
       }
 
-      ESP_LOGE(TAG, "Boiler reset command - no valid response");
+      ESP_LOGE(TAG, "Boiler reset command - no response at all");
       return false;
     }
 
