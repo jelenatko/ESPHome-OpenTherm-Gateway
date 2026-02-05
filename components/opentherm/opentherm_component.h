@@ -137,6 +137,11 @@ namespace esphome
       static OpenThermMessageID last_intercepted_id_;
       static bool has_new_intercepted_response_;
 
+      // User override for DHW temperature (to block QAA73 commands)
+      bool user_dhw_override_active_{false};
+      float user_dhw_setpoint_{40.0f};
+      unsigned long dhw_override_timestamp_{0};
+
       // Cached sensor values with timestamps (value updated by processRequest or explicit poll)
       struct CachedValue {
         float value{NAN};
