@@ -221,7 +221,13 @@ namespace esphome
       {
         hot_water_climate_->current_temperature = hot_water_temp;
         hot_water_climate_->action = is_hot_water_active ? climate::CLIMATE_ACTION_HEATING : climate::CLIMATE_ACTION_OFF;
-        hot_water_climate_->target_temperature = getHotWaterTargetTemperature();
+        
+        // Only update target temperature if user hasn't overridden it
+        if (!user_dhw_override_active_)
+        {
+          hot_water_climate_->target_temperature = getHotWaterTargetTemperature();
+        }
+        
         hot_water_climate_->publish_state();
       }
 
@@ -369,6 +375,13 @@ namespace esphome
 
     bool OpenthermComponent::setHotWaterTemperature(float temperature)
     {
+      // Activate user override - this will block QAA73 commands
+      user_dhw_override_active_ = true;
+      user_dhw_setpoint_ = temperature;
+      dhw_override_timestamp_ = millis();
+      
+      ESP_LOGI(TAG, "User DHW override activated: %.1f°C", temperature);
+      
       return setTemperatureWithVerification(
           temperature,
           OpenThermMessageID::TdhwSet,
@@ -401,11 +414,46 @@ namespace esphome
     {
       if (instance_ != nullptr && instance_->ot_ != nullptr && instance_->slave_ot_ != nullptr)
       {
-        unsigned long response = instance_->ot_->sendRequest(request);
-        instance_->slave_ot_->sendResponse(response);
-
         OpenThermMessageID id = instance_->ot_->getDataID(request);
         OpenThermMessageType msg_type = instance_->ot_->getMessageType(request);
+        
+        unsigned long modified_request = request;
+        
+        // Check if this is a DHW setpoint write from QAA73 and user has overridden it
+        if (id == OpenThermMessageID::TdhwSet && 
+            msg_type == OpenThermMessageType::WRITE_DATA &&
+            instance_->user_dhw_override_active_)
+        {
+          // Check if override is still active (timeout after 24 hours)
+          unsigned long now = millis();
+          unsigned long override_age = now - instance_->dhw_override_timestamp_;
+          const unsigned long OVERRIDE_TIMEOUT = 24UL * 60UL * 60UL * 1000UL; // 24 hours
+          
+          if (override_age < OVERRIDE_TIMEOUT)
+          {
+            // Replace QAA73's temperature with user's setting
+            float qaa73_temp = instance_->ot_->getFloat(request);
+            unsigned int user_data = instance_->ot_->temperatureToData(instance_->user_dhw_setpoint_);
+            modified_request = instance_->ot_->buildRequest(
+              OpenThermRequestType::WRITE,
+              OpenThermMessageID::TdhwSet,
+              user_data
+            );
+            
+            ESP_LOGI(TAG, "DHW override: QAA73 wants %.1f°C, sending user's %.1f°C instead",
+                     qaa73_temp, instance_->user_dhw_setpoint_);
+          }
+          else
+          {
+            // Override expired, deactivate it
+            instance_->user_dhw_override_active_ = false;
+            ESP_LOGI(TAG, "DHW override expired after 24 hours, resuming QAA73 control");
+          }
+        }
+        
+        // Send the (possibly modified) request to boiler
+        unsigned long response = instance_->ot_->sendRequest(modified_request);
+        instance_->slave_ot_->sendResponse(response);
 
         // Log intercepted requests at VERBOSE level
         ESP_LOGV(TAG, "Intercepted msg_id %d (type %d), response valid: %s",
@@ -432,7 +480,15 @@ namespace esphome
         else if (msg_type == OpenThermMessageType::WRITE_DATA)
         {
           // For WRITE requests, cache the REQUEST data (what thermostat wants to set)
-          last_intercepted_response_ = request; // Use request, not response
+          // But for TdhwSet, cache the MODIFIED request if override is active
+          if (id == OpenThermMessageID::TdhwSet && instance_->user_dhw_override_active_)
+          {
+            last_intercepted_response_ = modified_request;
+          }
+          else
+          {
+            last_intercepted_response_ = request; // Use original request
+          }
           last_intercepted_id_ = id;
           has_new_intercepted_response_ = true;
           ESP_LOGV(TAG, "Caching WRITE-DATA request for msg_id %d", static_cast<int>(id));
