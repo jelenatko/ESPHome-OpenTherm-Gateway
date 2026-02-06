@@ -222,10 +222,31 @@ namespace esphome
         hot_water_climate_->current_temperature = hot_water_temp;
         hot_water_climate_->action = is_hot_water_active ? climate::CLIMATE_ACTION_HEATING : climate::CLIMATE_ACTION_OFF;
         
-        // Only update target temperature if user hasn't overridden it
-        if (!user_dhw_override_active_)
+        // Force update DHW target temperature from QAA73 during first 20 update cycles
+        // to override any value that HA may have sent during initialization
+        static uint8_t dhw_update_counter = 0;
+        const uint8_t FORCE_UPDATE_CYCLES = 20;
+        
+        if (dhw_update_counter < FORCE_UPDATE_CYCLES)
         {
-          hot_water_climate_->target_temperature = getHotWaterTargetTemperature();
+          float dhw_target = getHotWaterTargetTemperature();
+          if (!std::isnan(dhw_target) && dhw_target > 0 && dhw_target < 80)
+          {
+            ESP_LOGI(TAG, "Force updating DHW target to %.1f°C from QAA73 (cycle %d/%d)", 
+                     dhw_target, dhw_update_counter + 1, FORCE_UPDATE_CYCLES);
+            hot_water_climate_->target_temperature = dhw_target;
+          }
+          dhw_update_counter++;
+        }
+        // After force update period, only update if user hasn't overridden it
+        else if (!user_dhw_override_active_)
+        {
+          float dhw_target = getHotWaterTargetTemperature();
+          if (!std::isnan(dhw_target) && dhw_target > 0 && dhw_target < 80)
+          {
+            ESP_LOGV(TAG, "Updating DHW target to %.1f°C from QAA73", dhw_target);
+            hot_water_climate_->initialize_target_temperature(dhw_target);
+          }
         }
         
         hot_water_climate_->publish_state();
@@ -237,11 +258,19 @@ namespace esphome
         // Falls back to boiler_temperature if QAA73 hasn't sent Tr yet.
         heating_water_climate_->current_temperature = !std::isnan(room_temperature) ? room_temperature : boiler_temperature;
         heating_water_climate_->action = is_central_heating_active ? climate::CLIMATE_ACTION_HEATING : climate::CLIMATE_ACTION_OFF;
-        // Initialize target from room_setpoint (ID 16, from QAA73) on first update only.
-        // Falls back to heating_target_temp (CH setpoint) if QAA73 hasn't sent TrSet yet.
-        // After first init, user can override with +/- in HA — that value is kept.
-        float init_target = !std::isnan(room_setpoint) ? room_setpoint : heating_target_temp;
-        heating_water_climate_->initialize_target_temperature(init_target);
+        
+        // Only update target temperature if user hasn't overridden it
+        if (!user_heating_override_active_)
+        {
+          // Initialize target from room_setpoint (ID 16, from QAA73) on first update only.
+          // Don't use heating_target_temp as fallback - it's CH water temp (40-50°C), not room temp!
+          // Only initialize if we have valid room_setpoint from QAA73
+          if (!std::isnan(room_setpoint) && room_setpoint > 0)
+          {
+            heating_water_climate_->initialize_target_temperature(room_setpoint);
+          }
+        }
+        
         heating_water_climate_->publish_state();
       }
     }
@@ -375,12 +404,35 @@ namespace esphome
 
     bool OpenthermComponent::setHotWaterTemperature(float temperature)
     {
+      ESP_LOGI(TAG, "User set DHW temperature to %.1f°C", temperature);
+      
+      // Ignore calls within first 30 seconds after boot - these are from HA restoring state
+      unsigned long uptime_ms = millis();
+      if (uptime_ms < 30000)
+      {
+        ESP_LOGI(TAG, "Ignoring DHW temperature set during startup (uptime: %lu ms)", uptime_ms);
+        return true;
+      }
+      
+      // Get current QAA73 setpoint
+      float qaa73_dhw = getHotWaterTargetTemperature();
+      
+      // If user sets temperature very close to QAA73's value, don't activate override
+      if (!std::isnan(qaa73_dhw) && std::abs(temperature - qaa73_dhw) < 0.5f)
+      {
+        ESP_LOGI(TAG, "DHW temperature (%.1f°C) matches QAA73 (%.1f°C), not activating override",
+                 temperature, qaa73_dhw);
+        // Deactivate override if it was active
+        user_dhw_override_active_ = false;
+        return true;
+      }
+      
       // Activate user override - this will block QAA73 commands
       user_dhw_override_active_ = true;
       user_dhw_setpoint_ = temperature;
       dhw_override_timestamp_ = millis();
       
-      ESP_LOGI(TAG, "User DHW override activated: %.1f°C", temperature);
+      ESP_LOGI(TAG, "DHW override activated: %.1f°C (QAA73 wants %.1f°C)", temperature, qaa73_dhw);
       
       return setTemperatureWithVerification(
           temperature,
@@ -392,12 +444,59 @@ namespace esphome
 
     bool OpenthermComponent::setHeatingTargetTemperature(float temperature)
     {
-      return setTemperatureWithVerification(
-          temperature,
-          OpenThermMessageID::TSet,
-          OpenThermMessageID::TSet,
-          heating_water_climate_,
-          "CH");
+      ESP_LOGI(TAG, "User set room temperature to %.1f°C", temperature);
+      
+      // Ignore calls within first 30 seconds after boot - these are from HA restoring state
+      unsigned long uptime_ms = millis();
+      if (uptime_ms < 30000)
+      {
+        ESP_LOGI(TAG, "Ignoring room temperature set during startup (uptime: %lu ms)", uptime_ms);
+        return true;
+      }
+      
+      // Get current QAA73 room setpoint
+      float qaa73_room_setpoint = getRoomSetpoint();
+      
+      // If user sets temperature very close to QAA73's value, don't activate override
+      if (!std::isnan(qaa73_room_setpoint) && std::abs(temperature - qaa73_room_setpoint) < 0.3f)
+      {
+        ESP_LOGI(TAG, "Room temperature (%.1f°C) matches QAA73 (%.1f°C), not activating override",
+                 temperature, qaa73_room_setpoint);
+        // Deactivate override if it was active
+        user_heating_override_active_ = false;
+        return true;
+      }
+      
+      // Activate user override for room setpoint - this will block QAA73 commands
+      user_heating_override_active_ = true;
+      user_heating_setpoint_ = temperature;
+      heating_override_timestamp_ = millis();
+      
+      ESP_LOGI(TAG, "Heating override activated: %.1f°C (QAA73 wants %.1f°C)", temperature, qaa73_room_setpoint);
+      
+      // For heating, we need to set the room setpoint (TrSet/ID 16), not CH water temp (TSet)
+      // TrSet is a WRITE-DATA command that tells the boiler what room temperature we want
+      ESP_LOGI(TAG, "Setting room setpoint to %.1f°C", temperature);
+
+      unsigned int data = ot_->temperatureToData(temperature);
+      unsigned long request = ot_->buildRequest(OpenThermRequestType::WRITE, OpenThermMessageID::TrSet, data);
+      unsigned long response = ot_->sendRequest(request);
+
+      if (!ot_->isValidResponse(response))
+      {
+        ESP_LOGE(TAG, "Failed to set room setpoint - invalid response");
+        return false;
+      }
+
+      // Update climate entity immediately
+      if (heating_water_climate_ != nullptr)
+      {
+        heating_water_climate_->target_temperature = temperature;
+        heating_water_climate_->publish_state();
+      }
+
+      ESP_LOGI(TAG, "Room setpoint set to %.1f°C", temperature);
+      return true;
     }
 
     float OpenthermComponent::getModulation()
@@ -431,23 +530,166 @@ namespace esphome
           
           if (override_age < OVERRIDE_TIMEOUT)
           {
-            // Replace QAA73's temperature with user's setting
-            float qaa73_temp = instance_->ot_->getFloat(request);
-            unsigned int user_data = instance_->ot_->temperatureToData(instance_->user_dhw_setpoint_);
-            modified_request = instance_->ot_->buildRequest(
-              OpenThermRequestType::WRITE,
-              OpenThermMessageID::TdhwSet,
-              user_data
-            );
+            // Get QAA73's DHW setpoint
+            float qaa73_dhw_temp = instance_->ot_->getFloat(request);
+            float user_dhw_temp = instance_->user_dhw_setpoint_;
             
-            ESP_LOGI(TAG, "DHW override: QAA73 wants %.1f°C, sending user's %.1f°C instead",
-                     qaa73_temp, instance_->user_dhw_setpoint_);
+            // Check if user has set the same temperature as QAA73 - if so, disable override
+            if (std::abs(qaa73_dhw_temp - user_dhw_temp) < 0.5f)
+            {
+              instance_->user_dhw_override_active_ = false;
+              ESP_LOGI(TAG, "DHW override auto-disabled: User setpoint (%.1f°C) matches QAA73 (%.1f°C)",
+                       user_dhw_temp, qaa73_dhw_temp);
+              // Don't modify request - let QAA73's value through
+            }
+            else
+            {
+              // Replace QAA73's temperature with user's setting
+              unsigned int user_data = instance_->ot_->temperatureToData(user_dhw_temp);
+              modified_request = instance_->ot_->buildRequest(
+                OpenThermRequestType::WRITE,
+                OpenThermMessageID::TdhwSet,
+                user_data
+              );
+              
+              ESP_LOGI(TAG, "DHW override: QAA73 wants %.1f°C, sending user's %.1f°C instead",
+                       qaa73_dhw_temp, user_dhw_temp);
+            }
           }
           else
           {
             // Override expired, deactivate it
             instance_->user_dhw_override_active_ = false;
             ESP_LOGI(TAG, "DHW override expired after 24 hours, resuming QAA73 control");
+          }
+        }
+        
+        // Check if this is CH water setpoint (TSet) from QAA73 and user has heating override active
+        // When user lowers room temp, we need to lower the CH water temperature
+        if (id == OpenThermMessageID::TSet && 
+            msg_type == OpenThermMessageType::WRITE_DATA &&
+            instance_->user_heating_override_active_)
+        {
+          // Check if override is still active (timeout after 24 hours)
+          unsigned long now = millis();
+          unsigned long override_age = now - instance_->heating_override_timestamp_;
+          const unsigned long OVERRIDE_TIMEOUT = 24UL * 60UL * 60UL * 1000UL; // 24 hours
+          
+          if (override_age < OVERRIDE_TIMEOUT)
+          {
+            // Get current room temperature and user's target
+            float current_temp = instance_->cached_room_temp_.value;
+            float target_temp = instance_->user_heating_setpoint_;
+            float qaa73_water_temp = instance_->ot_->getFloat(request);
+            float outdoor_temp = instance_->cached_external_temp_.value;
+            
+            // If current temp is above user's target + hysteresis, force low CH water temp to stop heating
+            if (!std::isnan(current_temp) && current_temp > target_temp + 0.2f)
+            {
+              // Set very low water temperature (20°C) to effectively disable heating
+              unsigned int low_temp_data = instance_->ot_->temperatureToData(20.0f);
+              modified_request = instance_->ot_->buildRequest(
+                OpenThermRequestType::WRITE,
+                OpenThermMessageID::TSet,
+                low_temp_data
+              );
+              
+              ESP_LOGI(TAG, "Heating override: Lowering CH water temp (QAA73: %.1f°C → 20°C) - room %.1f°C > target %.1f°C",
+                       qaa73_water_temp, current_temp, target_temp);
+            }
+            else if (!std::isnan(current_temp) && current_temp < target_temp - 0.5f)
+            {
+              // Room is below target - calculate water temp using heating curve
+              // Use outdoor temperature to calculate proper water temperature
+              float calculated_water_temp = qaa73_water_temp; // Default to QAA73's value
+              
+              if (!std::isnan(outdoor_temp))
+              {
+                // Heating curve calculation (typical slope 1.5, can be adjusted)
+                // Formula: water_temp = base_temp + curve_slope * (20°C - outdoor_temp)
+                // For outdoor -10°C: 30 + 1.5*(20-(-10)) = 30 + 45 = 75°C
+                // For outdoor +15°C: 30 + 1.5*(20-15) = 30 + 7.5 = 37.5°C
+                const float BASE_TEMP = 25.0f;     // Base water temperature
+                const float CURVE_SLOPE = 1.4f;    // Heating curve slope (lower = less aggressive)
+                const float DESIGN_ROOM_TEMP = 20.0f; // Design indoor temperature
+                
+                calculated_water_temp = BASE_TEMP + CURVE_SLOPE * (DESIGN_ROOM_TEMP - outdoor_temp);
+                
+                // Clamp to reasonable limits
+                if (calculated_water_temp < 25.0f) calculated_water_temp = 25.0f;
+                if (calculated_water_temp > 75.0f) calculated_water_temp = 75.0f;
+                
+                ESP_LOGI(TAG, "Heating override: Calculated water temp %.1f°C (outdoor: %.1f°C, QAA73: %.1f°C)",
+                         calculated_water_temp, outdoor_temp, qaa73_water_temp);
+              }
+              else
+              {
+                ESP_LOGW(TAG, "Heating override: No outdoor temp, using QAA73 calculation (%.1f°C)", qaa73_water_temp);
+              }
+              
+              // Send calculated water temperature
+              unsigned int water_temp_data = instance_->ot_->temperatureToData(calculated_water_temp);
+              modified_request = instance_->ot_->buildRequest(
+                OpenThermRequestType::WRITE,
+                OpenThermMessageID::TSet,
+                water_temp_data
+              );
+              
+              ESP_LOGI(TAG, "Heating override: Allowing CH (room %.1f°C < target %.1f°C, water temp %.1f°C)",
+                       current_temp, target_temp, calculated_water_temp);
+            }
+            else
+            {
+              // In hysteresis zone (target-0.5 to target+0.2) - maintain current state
+              ESP_LOGV(TAG, "Heating override: Hysteresis zone (room %.1f°C, target %.1f°C)",
+                       current_temp, target_temp);
+            }
+          }
+          else
+          {
+            // Override expired, deactivate it
+            instance_->user_heating_override_active_ = false;
+            ESP_LOGI(TAG, "Heating override expired after 24 hours, resuming QAA73 control");
+          }
+        }
+        
+        // Also override TrSet for consistency (though TSet is what actually controls heating)
+        if (id == OpenThermMessageID::TrSet && 
+            msg_type == OpenThermMessageType::WRITE_DATA &&
+            instance_->user_heating_override_active_)
+        {
+          // Check if override is still active
+          unsigned long now = millis();
+          unsigned long override_age = now - instance_->heating_override_timestamp_;
+          const unsigned long OVERRIDE_TIMEOUT = 24UL * 60UL * 60UL * 1000UL; // 24 hours
+          
+          if (override_age < OVERRIDE_TIMEOUT)
+          {
+            // Get QAA73's room setpoint
+            float qaa73_room_setpoint = instance_->ot_->getFloat(request);
+            float user_setpoint = instance_->user_heating_setpoint_;
+            
+            // Check if user has set the same temperature as QAA73 - if so, disable override
+            if (std::abs(qaa73_room_setpoint - user_setpoint) < 0.3f)
+            {
+              instance_->user_heating_override_active_ = false;
+              ESP_LOGI(TAG, "Heating override auto-disabled: User setpoint (%.1f°C) matches QAA73 (%.1f°C)",
+                       user_setpoint, qaa73_room_setpoint);
+              // Don't modify request - let QAA73's value through
+            }
+            else
+            {
+              // Replace QAA73's room setpoint with user's setting
+              unsigned int user_data = instance_->ot_->temperatureToData(user_setpoint);
+              modified_request = instance_->ot_->buildRequest(
+                OpenThermRequestType::WRITE,
+                OpenThermMessageID::TrSet,
+                user_data
+              );
+              
+              ESP_LOGI(TAG, "Heating override: Room setpoint QAA73 %.1f°C → user %.1f°C",
+                       qaa73_room_setpoint, user_setpoint);
+            }
           }
         }
         
@@ -479,9 +721,12 @@ namespace esphome
         // The master sends these to the boiler; we sniff them off the bus here.
         else if (msg_type == OpenThermMessageType::WRITE_DATA)
         {
-          // For WRITE requests, cache the REQUEST data (what thermostat wants to set)
-          // But for TdhwSet, cache the MODIFIED request if override is active
+          // For WRITE requests, cache the MODIFIED request if override is active
           if (id == OpenThermMessageID::TdhwSet && instance_->user_dhw_override_active_)
+          {
+            last_intercepted_response_ = modified_request;
+          }
+          else if (id == OpenThermMessageID::TrSet && instance_->user_heating_override_active_)
           {
             last_intercepted_response_ = modified_request;
           }
